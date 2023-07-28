@@ -460,6 +460,21 @@ mana_rss_hash_conf_get(struct rte_eth_dev *dev,
 }
 
 static int
+mana_vlan_filter_set(__rte_unused struct rte_eth_dev *dev,
+		     __rte_unused uint16_t vlan_id,
+		     __rte_unused int on)
+{
+	return 0;
+}
+
+static int
+mana_vlan_offload_set(__rte_unused struct rte_eth_dev *dev,
+		      __rte_unused int mask)
+{
+	return 0;
+}
+
+static int
 mana_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 			uint16_t nb_desc, unsigned int socket_id,
 			const struct rte_eth_txconf *tx_conf __rte_unused)
@@ -711,6 +726,8 @@ static const struct eth_dev_ops mana_dev_ops = {
 	.dev_supported_ptypes_get = mana_supported_ptypes,
 	.rss_hash_update	= mana_rss_hash_update,
 	.rss_hash_conf_get	= mana_rss_hash_conf_get,
+	.vlan_filter_set	= mana_vlan_filter_set,
+	.vlan_offload_set	= mana_vlan_offload_set,
 	.tx_queue_setup		= mana_dev_tx_queue_setup,
 	.tx_queue_release	= mana_dev_tx_queue_release,
 	.rx_queue_setup		= mana_dev_rx_queue_setup,
