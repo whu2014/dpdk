@@ -137,6 +137,9 @@ mana_start_tx_queues(struct rte_eth_dev *dev)
 
 		/* CQ head starts with count (not 0) */
 		txq->gdma_cq.head = txq->gdma_cq.count;
+#ifdef RTE_ARCH_32
+		txq->gdma_cq.last_cq_head = txq->gdma_cq.head;
+#endif
 
 		DRV_LOG(INFO, "txq cq id %u buf %p count %u size %u head %u",
 			txq->gdma_cq.id, txq->gdma_cq.buffer,
@@ -176,6 +179,9 @@ mana_tx_burst(void *dpdk_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	void *db_page;
 	uint16_t pkt_sent = 0;
 	uint32_t num_comp, i;
+#ifdef RTE_ARCH_32
+	uint32_t wqe_count = 0;
+#endif
 
 	/* Process send completions from GDMA */
 	num_comp = gdma_poll_completion_queue(&txq->gdma_cq,
@@ -415,6 +421,9 @@ mana_tx_burst(void *dpdk_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			txq->desc_ring_len++;
 
 			pkt_sent++;
+#ifdef RTE_ARCH_32
+			wqe_count += wqe_size_in_bu;
+#endif
 
 			DP_LOG(DEBUG, "nb_pkts %u pkt[%d] sent",
 			       nb_pkts, pkt_idx);
@@ -436,11 +445,19 @@ mana_tx_burst(void *dpdk_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	}
 
 	if (pkt_sent) {
+#ifdef RTE_ARCH_32
+		ret = mana_ring_short_doorbell(db_page, GDMA_QUEUE_SEND,
+					       txq->gdma_sq.id,
+					       wqe_count *
+						GDMA_WQE_ALIGNMENT_UNIT_SIZE,
+					       0);
+#else
 		ret = mana_ring_doorbell(db_page, GDMA_QUEUE_SEND,
 					 txq->gdma_sq.id,
 					 txq->gdma_sq.head *
 						GDMA_WQE_ALIGNMENT_UNIT_SIZE,
 					 0);
+#endif
 		if (ret)
 			DP_LOG(ERR, "mana_ring_doorbell failed ret %d", ret);
 	}

@@ -375,6 +375,9 @@ struct mana_gdma_queue {
 	uint32_t id;
 	uint32_t head;
 	uint32_t tail;
+#ifdef RTE_ARCH_32
+	uint32_t last_cq_head;
+#endif
 };
 
 #define MANA_MR_BTREE_PER_QUEUE_N	64
@@ -455,9 +458,16 @@ extern int mana_logtype_init;
 
 #define PMD_INIT_FUNC_TRACE() PMD_INIT_LOG(DEBUG, " >>")
 
+#ifdef RTE_ARCH_32
+int mana_ring_short_doorbell(void *db_page, enum gdma_queue_types queue_type,
+			     uint32_t queue_id, uint32_t tail_incr,
+			     uint8_t arm);
+int mana_rq_ring_short_doorbell(struct mana_rxq *rxq, uint32_t wqe_cnt);
+#else
 int mana_ring_doorbell(void *db_page, enum gdma_queue_types queue_type,
 		       uint32_t queue_id, uint32_t tail, uint8_t arm);
 int mana_rq_ring_doorbell(struct mana_rxq *rxq);
+#endif
 
 int gdma_post_work_request(struct mana_gdma_queue *queue,
 			   struct gdma_work_request *work_req,

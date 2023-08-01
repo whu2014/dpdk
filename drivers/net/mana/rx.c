@@ -21,6 +21,36 @@ static uint8_t mana_rss_hash_key_default[TOEPLITZ_HASH_KEY_SIZE_IN_BYTES] = {
 	0xfc, 0x1f, 0xdc, 0x2a,
 };
 
+#ifdef RTE_ARCH_32
+int
+mana_rq_ring_short_doorbell(struct mana_rxq *rxq, uint32_t wqe_cnt)
+{
+	struct mana_priv *priv = rxq->priv;
+	int ret;
+	void *db_page = priv->db_page;
+
+	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
+		struct rte_eth_dev *dev =
+			&rte_eth_devices[priv->dev_data->port_id];
+		struct mana_process_priv *process_priv = dev->process_private;
+
+		db_page = process_priv->db_page;
+	}
+
+	/* Hardware Spec specifies that software client should set 0 for
+	 * wqe_cnt for Receive Queues.
+	 */
+	ret = mana_ring_short_doorbell(db_page, GDMA_QUEUE_RECEIVE,
+			 rxq->gdma_rq.id,
+			 wqe_cnt * GDMA_WQE_ALIGNMENT_UNIT_SIZE,
+			 0);
+
+	if (ret)
+		DP_LOG(ERR, "failed to ring RX doorbell ret %d", ret);
+
+	return ret;
+}
+#else
 int
 mana_rq_ring_doorbell(struct mana_rxq *rxq)
 {
@@ -49,9 +79,10 @@ mana_rq_ring_doorbell(struct mana_rxq *rxq)
 
 	return ret;
 }
+#endif
 
 static int
-mana_alloc_and_post_rx_wqe(struct mana_rxq *rxq)
+mana_alloc_and_post_rx_wqe(struct mana_rxq *rxq, uint32_t *wqe_cnt)
 {
 	struct rte_mbuf *mbuf = NULL;
 	struct gdma_sgl_element sgl[1];
@@ -97,6 +128,8 @@ mana_alloc_and_post_rx_wqe(struct mana_rxq *rxq)
 		/* update queue for tracking pending packets */
 		desc->pkt = mbuf;
 		desc->wqe_size_in_bu = wqe_size_in_bu;
+		if (wqe_cnt)
+			*wqe_cnt = *wqe_cnt + wqe_size_in_bu;
 		rxq->desc_ring_head = (rxq->desc_ring_head + 1) % rxq->num_desc;
 	} else {
 		DP_LOG(DEBUG, "failed to post recv ret %d", ret);
@@ -112,18 +145,29 @@ mana_alloc_and_post_rx_wqe(struct mana_rxq *rxq)
 static int
 mana_alloc_and_post_rx_wqes(struct mana_rxq *rxq)
 {
+#ifdef RTE_ARCH_32
+	uint32_t wqe_count = 0;
+#endif
 	int ret;
 	uint32_t i;
 
 	for (i = 0; i < rxq->num_desc; i++) {
-		ret = mana_alloc_and_post_rx_wqe(rxq);
+#ifdef RTE_ARCH_32
+		ret = mana_alloc_and_post_rx_wqe(rxq, &wqe_count);
+#else
+		ret = mana_alloc_and_post_rx_wqe(rxq, NULL);
+#endif
 		if (ret) {
 			DP_LOG(ERR, "failed to post RX ret = %d", ret);
 			return ret;
 		}
 	}
 
+#ifdef RTE_ARCH_32
+	mana_rq_ring_short_doorbell(rxq, wqe_count);
+#else
 	mana_rq_ring_doorbell(rxq);
+#endif
 
 	return ret;
 }
@@ -349,6 +393,9 @@ mana_start_rx_queues(struct rte_eth_dev *dev)
 
 		/* CQ head starts with count */
 		rxq->gdma_cq.head = rxq->gdma_cq.count;
+#ifdef RTE_ARCH_32
+		rxq->gdma_cq.last_cq_head = rxq->gdma_cq.head;
+#endif
 
 		DRV_LOG(INFO, "rxq cq id %u buf %p count %u size %u",
 			rxq->gdma_cq.id, rxq->gdma_cq.buffer,
@@ -396,6 +443,9 @@ mana_rx_burst(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 	uint32_t pkt_len;
 	uint32_t i;
 	int polled = 0;
+#ifdef RTE_ARCH_32
+	uint32_t wqe_count = 0;
+#endif
 
 repoll:
 	/* Polling on new completions if we have no backlog */
@@ -496,7 +546,11 @@ drop:
 		rxq->gdma_rq.tail += desc->wqe_size_in_bu;
 
 		/* Consume this request and post another request */
-		ret = mana_alloc_and_post_rx_wqe(rxq);
+#ifdef RTE_ARCH_32
+		ret = mana_alloc_and_post_rx_wqe(rxq, &wqe_count);
+#else
+		ret = mana_alloc_and_post_rx_wqe(rxq, NULL);
+#endif
 		if (ret) {
 			DP_LOG(ERR, "failed to post rx wqe ret=%d", ret);
 			break;
@@ -520,7 +574,11 @@ drop:
 	}
 
 	if (wqe_posted)
+#ifdef RTE_ARCH_32
+		mana_rq_ring_short_doorbell(rxq, wqe_count);
+#else
 		mana_rq_ring_doorbell(rxq);
+#endif
 
 	return pkt_received;
 }
@@ -529,6 +587,16 @@ static int
 mana_arm_cq(struct mana_rxq *rxq, uint8_t arm)
 {
 	struct mana_priv *priv = rxq->priv;
+#ifdef RTE_ARCH_32
+	uint32_t cqe_incr = rxq->gdma_cq.head - rxq->gdma_cq.last_cq_head;
+
+	rxq->gdma_cq.last_cq_head = rxq->gdma_cq.head;
+	DP_LOG(DEBUG, "Ringing completion queue ID %u incr %u arm %d",
+	       rxq->gdma_cq.id, cqe_incr, arm);
+
+	return mana_ring_short_doorbell(priv->db_page, GDMA_QUEUE_COMPLETION,
+				  rxq->gdma_cq.id, cqe_incr, arm);
+#else
 	uint32_t head = rxq->gdma_cq.head %
 		(rxq->gdma_cq.count << COMPLETION_QUEUE_ENTRY_OWNER_BITS_SIZE);
 
@@ -537,6 +605,7 @@ mana_arm_cq(struct mana_rxq *rxq, uint8_t arm)
 
 	return mana_ring_doorbell(priv->db_page, GDMA_QUEUE_COMPLETION,
 				  rxq->gdma_cq.id, head, arm);
+#endif
 }
 
 int
