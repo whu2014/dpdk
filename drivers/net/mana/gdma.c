@@ -190,7 +190,7 @@ union gdma_short_doorbell_entry {
 	} sq;
 
 	struct {
-		uint32_t tail_ptr_incr	: 16; /* In number of bytes */
+		uint32_t tail_ptr_incr	: 16; /* Number of EQEs */
 		uint32_t id		: 12;
 		uint32_t reserved	: 3;
 		uint32_t arm		: 1;
@@ -203,9 +203,6 @@ enum {
 	DOORBELL_SHORT_OFFSET_CQ = 0x810,
 	DOORBELL_SHORT_OFFSET_EQ = 0xFF0,
 };
-
-#define	GDMA_SHORT_DB_INC_MASK		0xffff
-#define	GDMA_SHORT_DB_QID_MASK		0xfff
 
 /*
  * Write to hardware doorbell to notify new activity.
@@ -382,6 +379,9 @@ gdma_poll_completion_queue(struct mana_gdma_queue *cq,
 		num_comp++;
 
 		cq->head++;
+#ifdef RTE_ARCH_32
+		cq->head_incr_to_short_db++;
+#endif
 
 		DP_LOG(DEBUG, "comp new 0x%x old 0x%x cqe 0x%x wq %u sq %u head %u",
 		       new_owner_bits, old_owner_bits, cqe_owner_bits,

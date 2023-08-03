@@ -138,7 +138,7 @@ mana_start_tx_queues(struct rte_eth_dev *dev)
 		/* CQ head starts with count (not 0) */
 		txq->gdma_cq.head = txq->gdma_cq.count;
 #ifdef RTE_ARCH_32
-		txq->gdma_cq.last_cq_head = txq->gdma_cq.head;
+		txq->gdma_cq.head_incr_to_short_db = 0;
 #endif
 
 		DRV_LOG(INFO, "txq cq id %u buf %p count %u size %u head %u",
@@ -421,12 +421,23 @@ mana_tx_burst(void *dpdk_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			txq->desc_ring_len++;
 
 			pkt_sent++;
-#ifdef RTE_ARCH_32
-			wqe_count += wqe_size_in_bu;
-#endif
 
 			DP_LOG(DEBUG, "nb_pkts %u pkt[%d] sent",
 			       nb_pkts, pkt_idx);
+#ifdef RTE_ARCH_32
+			wqe_count += wqe_size_in_bu;
+			if (wqe_count > TX_WQE_SHORT_DB_THRESHOLD) {
+				/* wqe_count approaching to short doorbell
+				 * increment limit. Stop procesing further
+				 * more packets and just ring short
+				 * doorbell.
+				 */
+				DP_LOG(DEBUG, "wqe_count %u reaching limit, "
+				       "pkt_sent %d",
+				       wqe_count, pkt_sent);
+				break;
+			}
+#endif
 		} else {
 			DP_LOG(DEBUG, "pkt[%d] failed to post send ret %d",
 			       pkt_idx, ret);
